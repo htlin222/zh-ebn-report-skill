@@ -1,0 +1,62 @@
+name: Build & Release Skill
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version from SHA
+        id: version
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Package skill
+        run: |
+          cd zh-ebn-report
+          zip -r ../zh-ebn-report.zip .
+          cd ..
+          cp zh-ebn-report.zip zh-ebn-report.skill
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zh-ebn-report-${{ steps.version.outputs.sha }}
+          path: zh-ebn-report.skill
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          TAG="v0.1.0-${SHORT_SHA}"
+          cat > release-notes.md <<EOF
+          ## zh-ebn-report skill
+
+          **Version:** \`${SHORT_SHA}\`
+          **Commit:** ${GITHUB_SHA}
+
+          台灣護理人員撰寫實證護理報告（實證讀書報告、實證案例分析）的完整教練技能；專為 N1–N4 升等審查設計。
+
+          ### Install
+
+          \`\`\`bash
+          npx skills add htlin222/zh-ebn-report-skill
+          \`\`\`
+
+          或從下方 assets 直接下載 \`.skill\` 檔案。
+          EOF
+          gh release create "${TAG}" \
+            --title "zh-ebn-report skill ${TAG}" \
+            --notes-file release-notes.md \
+            zh-ebn-report.skill
