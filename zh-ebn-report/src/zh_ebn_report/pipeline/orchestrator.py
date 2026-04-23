@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ..clients.anthropic import AnthropicClient
+from ..clients.llm import make_llm_client
 from ..config import AppConfig
 from ..models import (
     CaseDetailsDeidentified,
@@ -38,7 +38,7 @@ class Orchestrator:
     def __init__(self, app_cfg: AppConfig, *, auto_yes: bool = False):
         self.app = app_cfg
         self.auto_yes = auto_yes
-        self.llm = AnthropicClient(app_cfg.llm)
+        self.llm = make_llm_client(app_cfg.llm)
 
     # -----------------------------------------------------------------
     # Phase 1: Topic Gatekeeper → CP1

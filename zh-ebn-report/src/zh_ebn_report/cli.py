@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional
@@ -71,10 +72,20 @@ def _ethics_guard(flag: bool) -> None:
 
 def _load_cfg() -> AppConfig:
     cfg = AppConfig.load()
-    if not cfg.llm.api_key:
+    backend = cfg.llm.backend
+    if backend == "auto":
+        backend = "claude_code" if shutil.which("claude") else "anthropic"
+    if backend == "anthropic" and not cfg.llm.api_key:
         console.print(
-            "[red]錯誤：未設定 ANTHROPIC_API_KEY 或 LLM_API_KEY。"
-            "請編輯 .env 後重試。[/]"
+            "[red]錯誤：LLM_BACKEND=anthropic 需 ANTHROPIC_API_KEY。[/]\n"
+            "改設 [cyan]LLM_BACKEND=claude_code[/] 走訂閱（預設），"
+            "並確認 `which claude` 有值。"
+        )
+        raise typer.Exit(2)
+    if backend == "claude_code" and shutil.which("claude") is None:
+        console.print(
+            "[red]錯誤：PATH 上找不到 `claude` CLI。[/]\n"
+            "請安裝 Claude Code，或改設 LLM_BACKEND=anthropic + ANTHROPIC_API_KEY。"
         )
         raise typer.Exit(2)
     return cfg

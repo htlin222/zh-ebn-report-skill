@@ -72,6 +72,14 @@ zh-ebn-report render --final                        # 去 DRAFT 後綴（需已 
 zh-ebn-report status <run-id>
 ```
 
+**LLM 後端（v0.6+）**：pipeline 預設走 Claude Code CLI（你的 Claude 訂閱），不再強制 `ANTHROPIC_API_KEY`。透過 `LLM_BACKEND` 環境變數切換：
+
+- `LLM_BACKEND=claude_code`（預設）— 以 subprocess 呼叫 `claude -p`，走訂閱。需 PATH 上有 `claude` CLI
+- `LLM_BACKEND=anthropic` — 直接走 Anthropic SDK；需 `ANTHROPIC_API_KEY`（或 `LLM_API_KEY`），適合 CI 或沒訂閱的環境
+- `LLM_BACKEND=auto` — 偵測有無 `claude` CLI 再選
+
+實作見 `clients/llm.py`（Protocol + factory）、`clients/claude_code_cli.py`（CLI 後端）、`clients/anthropic.py`（SDK 後端）。兩個後端對外介面一致，`complete()` / `complete_json()` 可互換。並發：多個 LLM call 起多個 `claude` subprocess，由 `max_parallel_casp` 等 config 限流。
+
 **Guardrail 架構（v0.2+）**：pipeline 不再只靠 LLM 自律。每一個 LLM 寫在 prompt 的「硬性規定」只要是機械可驗證的，都有對應 Python guardrail 在 orchestrator 裡覆寫 LLM 自評結果，或在 `compliance.check_sections` 裡擋下來：
 
 - `pipeline/evidence_guard.py` — Oxford Level 不可超過 study_design 的 OCEBM 2011 天花板（MA-of-cohort 絕不可 Level I）

@@ -14,13 +14,19 @@ load_dotenv(_PROJECT_ROOT / ".env")
 
 @dataclass(frozen=True)
 class LlmConfig:
-    """Anthropic (or Anthropic-compatible proxy) configuration.
+    """Backend-agnostic LLM configuration.
 
     Resolution order:
-    1. ``ANTHROPIC_API_KEY`` (plus optional ``ANTHROPIC_BASE_URL``) → direct API.
-    2. ``LLM_API_KEY`` + ``LLM_API_BASE`` → proxy that speaks Anthropic schema.
+    1. ``LLM_BACKEND=claude_code`` (default) — shell out to ``claude -p`` CLI;
+       uses the user's Claude subscription, no API key required.
+    2. ``LLM_BACKEND=anthropic`` — direct Anthropic SDK; requires
+       ``ANTHROPIC_API_KEY`` (or ``LLM_API_KEY``) + optional ``LLM_API_BASE``
+       for proxies.
+    3. ``LLM_BACKEND=auto`` — prefer ``claude_code`` when ``claude`` binary is
+       on PATH, else fall back to ``anthropic``.
     """
 
+    backend: str
     api_key: str
     base_url: str | None
     default_model: str
@@ -30,10 +36,14 @@ class LlmConfig:
 
     @classmethod
     def from_env(cls) -> LlmConfig:
+        backend = os.getenv("LLM_BACKEND", "claude_code").lower()
         key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("LLM_API_KEY", "")
         base = os.getenv("ANTHROPIC_BASE_URL") or os.getenv("LLM_API_BASE") or None
         default = os.getenv("LLM_MODEL", "claude-sonnet-4-6")
+        # Model IDs for the SDK backend. The CLI backend uses aliases like
+        # "haiku"/"sonnet"/"opus" natively, but also accepts full IDs.
         return cls(
+            backend=backend,
             api_key=key,
             base_url=base,
             default_model=default,

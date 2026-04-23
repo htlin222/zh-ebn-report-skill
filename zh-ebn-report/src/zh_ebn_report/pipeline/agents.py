@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ..clients.anthropic import AnthropicClient
+from ..clients.llm import LLMClient
 from ..config import PipelineConfig
 from ..models import (
     ApaCheckResult,
@@ -41,7 +41,7 @@ from .prompts import build_system
 
 async def run_topic_gatekeeper(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     user_topic_raw: str,
     ward_or_context: str,
@@ -76,7 +76,7 @@ async def run_topic_gatekeeper(
 
 async def run_pico_builder(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     refined_topic_zh: str,
     refined_topic_en: str,
@@ -109,7 +109,7 @@ async def run_pico_builder(
 
 async def run_search_strategist(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     pico: PICO,
     year_range_start: int,
@@ -162,7 +162,7 @@ _DESIGN_TO_TOOL: dict[StudyDesign, CaspTool] = {
 
 async def run_casp_appraiser(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     paper: Paper,
     pico: PICO,
@@ -192,7 +192,7 @@ async def run_casp_appraiser(
 
 async def run_casp_parallel(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     papers: list[Paper],
     pico: PICO,
@@ -214,7 +214,7 @@ async def run_casp_parallel(
 
 async def run_synthesiser(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     pico: PICO,
     casp_results: list[CaspResult],
@@ -266,7 +266,7 @@ _SECTION_PROMPT_FILES: dict[str, str] = {
 
 async def run_section_writer(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     section_name: str,
     pico: PICO,
@@ -294,12 +294,14 @@ async def run_section_writer(
     if papers is not None:
         parts.append(
             "Papers (citekeys + metadata):\n"
-            + "\n".join(f"- [@{p.citekey()}] {p.authors[:2]} ({p.year}). {p.title}. {p.journal}." for p in papers)
+            + "\n".join(
+                f"- [@{p.citekey()}] {p.authors[:2]} ({p.year}). {p.title}. {p.journal}."
+                for p in papers
+            )
         )
     if casp_results is not None:
         parts.append(
-            "CASP results:\n"
-            + "\n".join(c.model_dump_json(indent=2) for c in casp_results)
+            "CASP results:\n" + "\n".join(c.model_dump_json(indent=2) for c in casp_results)
         )
     if synthesis is not None:
         parts.append(f"SynthesisResult:\n{synthesis.model_dump_json(indent=2)}")
@@ -310,9 +312,7 @@ async def run_section_writer(
     if other_sections:
         parts.append(
             "已完成節（僅供摘要撰寫員參考，不可抄襲）:\n"
-            + "\n".join(
-                f"## {s.section_name}\n{s.content_zh[:500]}..." for s in other_sections
-            )
+            + "\n".join(f"## {s.section_name}\n{s.content_zh[:500]}..." for s in other_sections)
         )
 
     if retry_feedback:
@@ -332,7 +332,7 @@ async def run_section_writer(
 
 async def run_section_writers_parallel(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     section_names: list[str],
     max_concurrency: int,
@@ -354,7 +354,7 @@ async def run_section_writers_parallel(
 
 async def run_voice_guard(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     full_draft_zh: str,
 ) -> VoiceCheckResult:
@@ -363,10 +363,7 @@ async def run_voice_guard(
         skill_refs=["phrasing-bank.md"],
         role_prompt_file="voice_guard.md",
     )
-    user = (
-        "以下為完整報告草稿；請逐段掃描違規並輸出 JSON：\n\n"
-        + full_draft_zh
-    )
+    user = "以下為完整報告草稿；請逐段掃描違規並輸出 JSON：\n\n" + full_draft_zh
     data = await llm.complete_json(
         tier="haiku",
         system_blocks=system,
@@ -383,7 +380,7 @@ async def run_voice_guard(
 
 async def run_apa_formatter(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     references_bib: str,
     papers: list[Paper],
@@ -426,7 +423,7 @@ async def run_apa_formatter(
 
 async def run_case_narrator(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     case_details: CaseDetailsDeidentified,
     pico: PICO,
@@ -457,7 +454,7 @@ async def run_case_narrator(
 
 async def run_apply_auditor(
     *,
-    llm: AnthropicClient,
+    llm: LLMClient,
     cfg: PipelineConfig,
     synthesis: SynthesisResult,
     intervention_plan_zh: str,
@@ -496,9 +493,7 @@ async def run_apply_auditor(
     return audit
 
 
-def _derive_too_perfect(
-    pre: list[dict[str, Any]], post: list[dict[str, Any]]
-) -> bool:
+def _derive_too_perfect(pre: list[dict[str, Any]], post: list[dict[str, Any]]) -> bool:
     """Return True when the Pre/Post comparison looks suspiciously clean.
 
     Triggers when all Post numerical outcomes are either identical to their
