@@ -25,6 +25,8 @@ from .compliance import (
 )
 from .evidence_guard import enforce_evidence_levels
 from .searcher import run_searches
+from .synthesis_guard import normalize_synthesis
+from .voice_scan import normalize_voice_result
 
 MAX_COMPLIANCE_RETRIES = 2
 
@@ -175,6 +177,13 @@ class Orchestrator:
             casp_results=state.casp_results,
             papers=state.search_result.papers,
         )
+        # Deterministic guardrail: overwrite the LLM-judged
+        # overall_evidence_strength with a Python-derived verdict based on
+        # CASP oxford levels + declared contradictions (rule is mechanical
+        # per synthesiser.md — no judgment needed).
+        synth, note = normalize_synthesis(synth, state.casp_results)
+        if note:
+            log.warning("synthesis_guard: %s", note)
         state.synthesis = synth
         state.current_phase = PipelinePhase.SYNTHESISE
         save_state(self.app.pipeline, state)
@@ -366,6 +375,10 @@ class Orchestrator:
             doi_validations_json=doi_validations,
         )
         voice, apa = await asyncio.gather(voice_task, apa_task)
+        # Regex-based scanner + deterministic pass_threshold recomputation;
+        # the LLM's self-reported total_violations / pass_threshold_met are
+        # replaced with values derived from the merged violation set.
+        voice = normalize_voice_result(voice, full_draft)
         state.voice_check = voice
         state.apa_check = apa
         state.current_phase = PipelinePhase.CHECK

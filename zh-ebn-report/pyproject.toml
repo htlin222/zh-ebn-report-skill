@@ -1,6 +1,6 @@
 [project]
 name = "zh-ebn-report"
-version = "0.2.0"
+version = "0.3.0"
 description = "End-to-end HITL pipeline for Taiwan evidence-based nursing (EBN) reports: vague topic → refined PICO → multi-database search → CASP appraisal → Quarto DOCX draft."
 readme = "SKILL.md"
 requires-python = ">=3.11"

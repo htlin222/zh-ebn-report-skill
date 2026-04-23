@@ -226,6 +226,12 @@ def check_sections(state: RunState, *, kind: ReportKind) -> ComplianceReport:
     # APPRAISE phase; this catches regressions / manual state edits).
     report.issues.extend(_check_evidence_level_vs_design(papers))
 
+    # 4c. DOI must be validated by CrossRef (no fabricated citations).
+    report.issues.extend(_check_doi_validation(papers))
+
+    # 4d. 摘要 must not contain citation placeholders.
+    report.issues.extend(_check_abstract_no_citations(sections_by_name))
+
     # 5. Total-body length (hard page cap for TWNA submissions)
     report.issues.extend(_check_total_length(state, kind=kind))
 
@@ -262,6 +268,67 @@ def _check_title(verdict: TopicVerdict | None) -> list[ComplianceIssue]:
 
 
 _HIGH_LEVELS = {OxfordLevel.I, OxfordLevel.II}
+
+
+def _check_doi_validation(papers: list[Paper]) -> list[ComplianceIssue]:
+    """S4: any paper with unresolved DOI (or CrossRef metadata mismatch) is an
+    error. The searcher sets ``doi_validated`` via CrossRef; a False here
+    means either the DOI does not resolve or CrossRef returned different
+    metadata from what the LLM produced — both are signals of fabrication or
+    stale citations.
+    """
+
+    issues: list[ComplianceIssue] = []
+    for p in papers:
+        if not p.doi_validated:
+            issues.append(
+                ComplianceIssue(
+                    section="參考文獻",
+                    rule="doi_unvalidated",
+                    detail=(
+                        f"[{p.doi}] DOI 未通過 CrossRef 驗證；"
+                        "_base.md 硬性規定禁止編造 DOI"
+                    ),
+                )
+            )
+            continue
+        if p.doi_metadata_matches is False:
+            issues.append(
+                ComplianceIssue(
+                    section="參考文獻",
+                    rule="doi_metadata_mismatch",
+                    detail=(
+                        f"[{p.doi}] CrossRef metadata 與 paper 不一致（"
+                        f"title='{p.title[:40]}…'）；可能引文錯植"
+                    ),
+                )
+            )
+    return issues
+
+
+def _check_abstract_no_citations(
+    sections_by_name: dict[str, Section],
+) -> list[ComplianceIssue]:
+    """S5: 摘要 must not contain citation placeholders.
+
+    section_writer_摘要.md:35 明文「禁止任何引文佔位」。LLM 可能偷加，
+    compliance 這裡強制為零。
+    """
+
+    sec = sections_by_name.get("摘要")
+    if sec is None or not sec.citation_placeholders:
+        return []
+    return [
+        ComplianceIssue(
+            section="摘要",
+            rule="abstract_no_citations",
+            detail=(
+                f"摘要含 {len(sec.citation_placeholders)} 個引文佔位："
+                + ", ".join(sec.citation_placeholders[:3])
+                + "；模板規定摘要不得引用文獻"
+            ),
+        )
+    ]
 
 
 def _check_evidence_level_vs_design(
