@@ -224,6 +224,25 @@ class SixPieceStrategy(BaseModel):
             raise ValueError("至少需一個 PubMed MeSH 詞")
         return v
 
+    @field_validator("boolean_query_pubmed", "boolean_query_cochrane", "boolean_query_cinahl")
+    @classmethod
+    def no_oversized_or_cluster(cls, v: str) -> str:
+        # search_strategist.md:44 — 禁止 > 3 個 OR 連接的自由字群（> 4 terms）。
+        # Count OR operators inside each parenthesized group; flag if any
+        # single group has more than 3 OR (i.e. 5+ terms).
+        import re as _re
+
+        for group_match in _re.finditer(r"\(([^()]+)\)", v):
+            inner = group_match.group(1)
+            or_count = len(_re.findall(r"\b[Oo][Rr]\b", inner))
+            if or_count > 3:
+                raise ValueError(
+                    f"Boolean 查詢出現 {or_count + 1} 個 OR-連接自由字群"
+                    f"（{group_match.group()[:50]}…）；search_strategist.md "
+                    "規定單一群最多 4 terms (3 OR)，以免命中超過 5000 篇"
+                )
+        return v
+
 
 class TuningPlan(BaseModel):
     if_too_narrow: list[str]
@@ -365,6 +384,18 @@ class SynthesisResult(BaseModel):
     recommended_intervention_summary_zh: str
     limitations_zh: list[str]
 
+    @field_validator("limitations_zh")
+    @classmethod
+    def limitations_min_three(cls, v: list[str]) -> list[str]:
+        # synthesiser.md:37 — limitations_zh 必須至少 3 條；LLM 有時只給 1–2。
+        non_empty = [item for item in v if item.strip()]
+        if len(non_empty) < 3:
+            raise ValueError(
+                f"limitations_zh 僅 {len(non_empty)} 條；synthesiser.md 要求至少 3 條"
+                "（文獻品質、樣本代表性、與台灣情境差異）"
+            )
+        return v
+
 
 # ---------------------------------------------------------------------------
 # Section writing (Subagent 6)
@@ -505,6 +536,19 @@ class CaseNarrative(BaseModel):
     deid_check_passed: bool
     direct_quotes: list[DirectQuote]
 
+    @field_validator("direct_quotes")
+    @classmethod
+    def requires_case_and_family_quote(cls, v: list[DirectQuote]) -> list[DirectQuote]:
+        # section_writer_個案介紹.md:33-34 — 必須有 ≥1 個案原話 + ≥1 家屬原話。
+        speakers = {q.speaker for q in v}
+        missing = {"個案", "家屬"} - speakers
+        if missing:
+            raise ValueError(
+                f"direct_quotes 缺少 {missing} 原話；"
+                "個案介紹必須同時有個案原話與家屬原話各 ≥ 1"
+            )
+        return v
+
 
 class Observation(BaseModel):
     timestamp: str
@@ -519,6 +563,30 @@ class InterventionAudit(BaseModel):
     time_stamped_table: list[dict[str, str]]
     deviation_explanation_zh: str | None
     warning_too_perfect: bool
+
+    @field_validator("time_stamped_table")
+    @classmethod
+    def requires_min_two_rows_with_keys(
+        cls, v: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        # section_writer_應用.md:38-39 — ≥2 時間戳記觀察 + 客觀量表數字。
+        if len(v) < 2:
+            raise ValueError(
+                f"time_stamped_table 僅 {len(v)} 筆；至少需要 2 筆"
+                "（Pre 與 Post 各一，用於呈現介入前後變化）"
+            )
+        required_any = (
+            {"timestamp", "scale", "value"},
+            {"時間", "量表", "數值"},
+        )
+        for idx, row in enumerate(v):
+            keys = set(row.keys())
+            if not any(req.issubset(keys) for req in required_any):
+                raise ValueError(
+                    f"time_stamped_table[{idx}] 缺少必要欄位；需同時含"
+                    " timestamp/scale/value（或中文等義）以呈現客觀量表數字"
+                )
+        return v
 
 
 # ---------------------------------------------------------------------------

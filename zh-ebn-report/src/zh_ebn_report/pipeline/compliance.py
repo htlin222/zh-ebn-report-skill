@@ -232,6 +232,12 @@ def check_sections(state: RunState, *, kind: ReportKind) -> ComplianceReport:
     # 4d. 摘要 must not contain citation placeholders.
     report.issues.extend(_check_abstract_no_citations(sections_by_name))
 
+    # 4e. 個案介紹 privacy (specific age / occupation / location).
+    report.issues.extend(_check_case_privacy(sections_by_name))
+
+    # 4f. 結論 / 應用建議 forbids absolute language (全面推廣 etc.).
+    report.issues.extend(_check_absolute_language(sections_by_name))
+
     # 5. Total-body length (hard page cap for TWNA submissions)
     report.issues.extend(_check_total_length(state, kind=kind))
 
@@ -300,6 +306,105 @@ def _check_doi_validation(papers: list[Paper]) -> list[ComplianceIssue]:
                     detail=(
                         f"[{p.doi}] CrossRef metadata 與 paper 不一致（"
                         f"title='{p.title[:40]}…'）；可能引文錯植"
+                    ),
+                )
+            )
+    return issues
+
+
+_CASE_PRIVACY_AGE_RE = re.compile(r"(?<!\d)(\d{1,3})\s*歲")
+_CASE_PRIVACY_OCCUPATION_RE = re.compile(
+    r"(工程師|教師|老師|警察|軍人|公務員|律師|會計師|醫師|護理師|業務員|廚師|司機)"
+)
+_CASE_PRIVACY_LOCATION_RE = re.compile(
+    r"(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|新竹|苗栗|彰化|南投|"
+    r"雲林|嘉義|屏東|宜蘭|花蓮|台東|臺東|澎湖|金門|連江)(市|縣|區|鎮)?"
+)
+_AGE_RANGE_OK_RE = re.compile(r"\d{1,3}\s*[–—\-]\s*\d{1,3}\s*歲")
+
+
+def _check_case_privacy(
+    sections_by_name: dict[str, Section],
+) -> list[ComplianceIssue]:
+    """M4: section_writer_個案介紹.md 禁具體年齡 (改區間)、職業、居住地。
+
+    只對「個案介紹」節掃描，避免誤傷其他節（討論可能合法談流行病學）。
+    """
+
+    sec = sections_by_name.get("個案介紹")
+    if sec is None:
+        return []
+    text = sec.content_zh
+    issues: list[ComplianceIssue] = []
+
+    # Age: flag "42 歲" but NOT "50–60 歲" (range). Strip ranges from the
+    # scan substring so a range doesn't also trigger the single-age regex.
+    scannable = _AGE_RANGE_OK_RE.sub(" [range] ", text)
+    for m in _CASE_PRIVACY_AGE_RE.finditer(scannable):
+        issues.append(
+            ComplianceIssue(
+                section="個案介紹",
+                rule="case_privacy_specific_age",
+                detail=(
+                    f"疑似具體年齡 '{m.group()}'；模板要求改為區間"
+                    "（50–60 歲、銀髮期 ≥ 65 歲）"
+                ),
+            )
+        )
+        break  # one per section
+
+    occ = _CASE_PRIVACY_OCCUPATION_RE.search(text)
+    if occ:
+        issues.append(
+            ComplianceIssue(
+                section="個案介紹",
+                rule="case_privacy_occupation",
+                detail=(
+                    f"疑似具體職業 '{occ.group()}'；個案介紹禁可識別資訊"
+                ),
+            )
+        )
+    loc = _CASE_PRIVACY_LOCATION_RE.search(text)
+    if loc:
+        issues.append(
+            ComplianceIssue(
+                section="個案介紹",
+                rule="case_privacy_location",
+                detail=(
+                    f"疑似居住地 '{loc.group()}'；個案介紹禁可識別資訊"
+                ),
+                severity="warning",  # 地名可能是合法上下文，保守為 warning
+            )
+        )
+    return issues
+
+
+_ABSOLUTE_LANGUAGE_RE = re.compile(
+    r"(全面推廣|所有病房|以後都這樣做|一律適用|永遠有效|百分之百有效|毫無風險)"
+)
+
+
+def _check_absolute_language(
+    sections_by_name: dict[str, Section],
+) -> list[ComplianceIssue]:
+    """M5: section_writer_結論.md:35 + 應用建議.md:39 禁絕對用語。
+
+    這類用語等於把 observational 外推到全場景，屬實證倫理紅線。
+    """
+
+    issues: list[ComplianceIssue] = []
+    for name in ("結論", "應用建議"):
+        sec = sections_by_name.get(name)
+        if sec is None:
+            continue
+        for m in _ABSOLUTE_LANGUAGE_RE.finditer(sec.content_zh):
+            issues.append(
+                ComplianceIssue(
+                    section=name,
+                    rule="absolute_language",
+                    detail=(
+                        f"偵測到絕對用語 '{m.group()}'；建議改為"
+                        "『在 [條件] 下可優先考慮 …』或限定族群/情境"
                     ),
                 )
             )

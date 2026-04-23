@@ -8,6 +8,7 @@ the corresponding Pydantic result.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from pydantic import ValidationError
@@ -485,4 +486,59 @@ async def run_apply_auditor(
         user_message=user,
         max_tokens=4096,
     )
-    return InterventionAudit.model_validate(data)
+    audit = InterventionAudit.model_validate(data)
+    # M7: overwrite warning_too_perfect with deterministic OR of
+    #    (LLM's self-reported flag) ∨ (derived-from-observations flag).
+    # "完美無瑕" 情境：所有 post 觀察與 pre 完全相同（沒改變）或 100% 達標。
+    audit.warning_too_perfect = audit.warning_too_perfect or _derive_too_perfect(
+        pre_observations, post_observations
+    )
+    return audit
+
+
+def _derive_too_perfect(
+    pre: list[dict[str, Any]], post: list[dict[str, Any]]
+) -> bool:
+    """Return True when the Pre/Post comparison looks suspiciously clean.
+
+    Triggers when all Post numerical outcomes are either identical to their
+    Pre counterpart (no change at all, odd for a reported successful
+    intervention) or all are at the extreme end of the scale (100% adherence,
+    0% symptoms — rarely true in real nursing cases).
+    """
+
+    if not pre or not post:
+        return False
+    pre_vals = [_extract_numbers(o) for o in pre]
+    post_vals = [_extract_numbers(o) for o in post]
+    if not any(post_vals):
+        return False
+
+    pre_flat = [n for row in pre_vals for n in row]
+    post_flat = [n for row in post_vals for n in row]
+    if pre_flat and post_flat and pre_flat == post_flat:
+        return True
+    # All Post values at 0 or 100 — often a fabricated "everything resolved"
+    if post_flat and all(v in (0, 100) for v in post_flat):
+        return True
+    return False
+
+
+_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _extract_numbers(observation: dict[str, Any]) -> list[float]:
+    """Extract any numbers from observation dict values for variance check."""
+
+    out: list[float] = []
+    for val in observation.values():
+        if isinstance(val, int | float):
+            out.append(float(val))
+            continue
+        if isinstance(val, str):
+            for m in _NUM_RE.finditer(val):
+                try:
+                    out.append(float(m.group()))
+                except ValueError:
+                    pass
+    return out
