@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from ..clients.audited import AuditedLLMClient
 from ..clients.llm import make_llm_client
 from ..config import AppConfig
 from ..models import (
@@ -15,15 +16,16 @@ from ..models import (
     SourceDB,
 )
 from ..spec import section_names as spec_section_names
-from ..state import save_state
+from ..state import run_dir, save_state
 from . import agents
 from . import checkpoints as cp
+from .apa_guard import normalize_apa_result
+from .audit import ArtifactStore
 from .compliance import (
     ComplianceReport,
     check_sections,
     retry_feedback_for_section,
 )
-from .apa_guard import normalize_apa_result
 from .evidence_guard import enforce_evidence_levels
 from .searcher import run_searches
 from .synthesis_guard import normalize_synthesis
@@ -38,12 +40,61 @@ class Orchestrator:
     def __init__(self, app_cfg: AppConfig, *, auto_yes: bool = False):
         self.app = app_cfg
         self.auto_yes = auto_yes
-        self.llm = make_llm_client(app_cfg.llm)
+        self._inner_llm = make_llm_client(app_cfg.llm)
+        # Per-run audit resources (lazily initialised on first phase call).
+        self._current_run_id: str | None = None
+        self._current_store: ArtifactStore | None = None
+        self._current_llm: AuditedLLMClient | None = None
+
+    def _bind_to_run(self, state: RunState) -> AuditedLLMClient:
+        """Ensure the audited LLM wrapper + ArtifactStore target THIS run.
+
+        Called at the top of every phase method so any subagent call made
+        during the phase lands in the correct ``output/<run-id>/artifacts``
+        tree.
+        """
+
+        run_id = state.config.run_id
+        if self._current_run_id != run_id:
+            self._current_run_id = run_id
+            self._current_store = ArtifactStore(
+                run_dir(self.app.pipeline, run_id) / "artifacts"
+            )
+            self._current_llm = AuditedLLMClient(
+                self._inner_llm,
+                self._current_store,
+                backend_name=self.app.llm.backend,
+            )
+        assert self._current_llm is not None  # for type-checker
+        return self._current_llm
+
+    @property
+    def llm(self) -> AuditedLLMClient:
+        """Back-compat for any external caller; panics if no run is bound.
+
+        Internal code should call ``self._bind_to_run(state)`` first.
+        """
+
+        if self._current_llm is None:
+            raise RuntimeError(
+                "Orchestrator.llm accessed before _bind_to_run(state); "
+                "call a phase method first"
+            )
+        return self._current_llm
+
+    @property
+    def store(self) -> ArtifactStore:
+        if self._current_store is None:
+            raise RuntimeError(
+                "Orchestrator.store accessed before _bind_to_run(state)"
+            )
+        return self._current_store
 
     # -----------------------------------------------------------------
     # Phase 1: Topic Gatekeeper → CP1
     # -----------------------------------------------------------------
     async def phase_topic(self, state: RunState) -> RunState:
+        self._bind_to_run(state)
         verdict = await agents.run_topic_gatekeeper(
             llm=self.llm,
             cfg=self.app.pipeline,
@@ -69,6 +120,7 @@ class Orchestrator:
     # Phase 2: PICO Builder → CP2
     # -----------------------------------------------------------------
     async def phase_pico(self, state: RunState) -> RunState:
+        self._bind_to_run(state)
         assert state.topic_verdict is not None
         scenario = state.config.clinical_scenario_zh or state.config.ward_or_context
         result = await agents.run_pico_builder(
@@ -90,6 +142,7 @@ class Orchestrator:
     async def phase_search(
         self, state: RunState, *, manual_imports: dict[SourceDB, Path] | None = None
     ) -> RunState:
+        self._bind_to_run(state)
         assert state.pico_result is not None
         strategy = await agents.run_search_strategist(
             llm=self.llm,
@@ -126,6 +179,7 @@ class Orchestrator:
     # Phase 4: CASP Appraisers (parallel) → CP5
     # -----------------------------------------------------------------
     async def phase_appraise(self, state: RunState) -> RunState:
+        self._bind_to_run(state)
         assert state.search_result is not None and state.pico_result is not None
         results = await agents.run_casp_parallel(
             llm=self.llm,
@@ -140,8 +194,31 @@ class Orchestrator:
         # (e.g. MA-of-cohort cannot be Level I). Runs before synthesis so the
         # Synthesiser sees normalized evidence levels rather than trusting the
         # per-paper LLM call.
+        before_payload = {
+            "papers": [p.model_dump(mode="json") for p in state.search_result.papers],
+            "casp_results": [c.model_dump(mode="json") for c in state.casp_results],
+        }
         downgrades = enforce_evidence_levels(
             state.search_result.papers, state.casp_results
+        )
+        after_payload = {
+            "papers": [p.model_dump(mode="json") for p in state.search_result.papers],
+            "casp_results": [c.model_dump(mode="json") for c in state.casp_results],
+        }
+        self.store.dump_guardrail(
+            "evidence_guard",
+            before=before_payload,
+            after=after_payload,
+            summary=[
+                {
+                    "paper_doi": d.paper_doi,
+                    "study_design": d.study_design.value,
+                    "original_level": d.original_level.value,
+                    "corrected_level": d.corrected_level.value,
+                    "reason": d.reason,
+                }
+                for d in downgrades
+            ],
         )
         if downgrades:
             log.warning(
@@ -170,6 +247,7 @@ class Orchestrator:
     # Phase 5: Synthesiser → CP6
     # -----------------------------------------------------------------
     async def phase_synthesise(self, state: RunState) -> RunState:
+        self._bind_to_run(state)
         assert state.pico_result is not None and state.search_result is not None
         synth = await agents.run_synthesiser(
             llm=self.llm,
@@ -182,7 +260,15 @@ class Orchestrator:
         # overall_evidence_strength with a Python-derived verdict based on
         # CASP oxford levels + declared contradictions (rule is mechanical
         # per synthesiser.md — no judgment needed).
+        before_payload = synth.model_dump(mode="json")
         synth, note = normalize_synthesis(synth, state.casp_results)
+        after_payload = synth.model_dump(mode="json")
+        self.store.dump_guardrail(
+            "synthesis_guard",
+            before=before_payload,
+            after=after_payload,
+            summary={"note": note},
+        )
         if note:
             log.warning("synthesis_guard: %s", note)
         state.synthesis = synth
@@ -206,6 +292,7 @@ class Orchestrator:
     ) -> RunState:
         import asyncio
 
+        self._bind_to_run(state)
         assert state.synthesis is not None and state.pico_result is not None
         narrative_task = agents.run_case_narrator(
             llm=self.llm,
@@ -232,6 +319,7 @@ class Orchestrator:
     # Phase 6: Section Writers (parallel) → compliance loop → CP7
     # -----------------------------------------------------------------
     async def phase_write(self, state: RunState) -> RunState:
+        self._bind_to_run(state)
         assert state.pico_result is not None and state.synthesis is not None
 
         kind = state.config.report_type.value  # "reading" | "case" | "twna_case" | "twna_project"
@@ -349,6 +437,7 @@ class Orchestrator:
 
         from ..renderers.bibliography import papers_to_bibtex
 
+        self._bind_to_run(state)
         assert state.search_result is not None
         full_draft = "\n\n".join(
             f"# {s.section_name}\n\n{s.content_zh}" for s in state.sections
@@ -379,13 +468,30 @@ class Orchestrator:
         # Regex-based scanner + deterministic pass_threshold recomputation;
         # the LLM's self-reported total_violations / pass_threshold_met are
         # replaced with values derived from the merged violation set.
+        voice_before = voice.model_dump(mode="json")
         voice = normalize_voice_result(voice, full_draft)
+        self.store.dump_guardrail(
+            "voice_scan",
+            before=voice_before,
+            after=voice.model_dump(mode="json"),
+            summary={
+                "pass_threshold_met": voice.pass_threshold_met,
+                "total_violations": voice.total_violations,
+            },
+        )
         # A3 (v0.5): the LLM's self-reported apa_pass is replaced with a
         # Python-derived truth value based on DOI validation + citation-
         # existence + LLM-declared format issues.
         sections_by_name = {s.section_name: s for s in state.sections}
+        apa_before = apa.model_dump(mode="json")
         apa, apa_reasons = normalize_apa_result(
             apa, state.search_result.papers, sections_by_name
+        )
+        self.store.dump_guardrail(
+            "apa_guard",
+            before=apa_before,
+            after=apa.model_dump(mode="json"),
+            summary={"apa_pass": apa.apa_pass, "reasons": apa_reasons},
         )
         if apa_reasons:
             log.warning(
@@ -406,6 +512,7 @@ class Orchestrator:
     async def phase_render(self, state: RunState) -> RunState:
         from ..renderers.quarto import render_to_docx
 
+        self._bind_to_run(state)
         docx_path = render_to_docx(self.app, state)
         state.rendered_docx_path = docx_path
         state.current_phase = PipelinePhase.RENDER

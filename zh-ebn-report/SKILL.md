@@ -96,6 +96,20 @@ python scripts/retro_validate.py
 
 把 `output/<run-id>/state.json` 的歷史資料全部載入，用當前 guardrail 套一遍，報告「如果當時就有這些 guardrail，會抓到什麼」。用於 (a) 確認 guardrail 捕捉到真實違規、(b) 避免回歸。加 `--json` 輸出給 CI；加 `--strict` 讓任何 guardrail 發現都退出碼 1。
 
+**Audit Artifact Store（v0.7+）**：每個 run 在 `output/<run-id>/artifacts/` 留一整組中間產物供日後審查：
+
+```
+artifacts/
+  _index.jsonl                  # append-only 所有 artifact 的紀錄（timestamp, category, path, meta）
+  blobs/<sha256>.txt            # 內容定址儲存（system prompt 60KB × 30 次只存 1 份）
+  llm/<ISO>_<caller>_<tier>_<id>.json  # 每次 LLM 呼叫的完整記錄
+  guardrails/<name>/<ISO>_{before,after,summary}.json  # 每道 guardrail 的 before/after/summary
+```
+
+LLM record 含：呼叫者函式名（自動偵測 stack）、tier、model、backend（anthropic / claude_code）、duration_ms、system prompt hashes、user msg hash、response raw hash、response_parsed。Guardrail 紀錄讓「LLM 原始判讀 vs Python 覆寫後」兩個版本都保留。
+
+實作見 `pipeline/audit.py`（`ArtifactStore`）與 `clients/audited.py`（`AuditedLLMClient`）。Orchestrator 在每個 phase 入口呼叫 `_bind_to_run(state)` 建立對應 run 的 store，LLM 與 guardrail 呼叫透明落檔。
+
 Pipeline 最終輸出 **`<報告>-DRAFT.docx`**（Quarto → pandoc → DOCX，APA 7 CSL 引文排版），含搜尋歷程表、CASP 評讀表、PRISMA 風格流程圖、AI 協作聲明頁。若 `templates/reference.docx`（可選）存在，將做為樣式母本套用院內字型與樣式；否則以 pandoc 預設樣式輸出。
 
 **倫理守則**（依 2026 年台灣護理學會與台灣實證護理學會規範；詳見 `references/ai-disclosure.md`）：
