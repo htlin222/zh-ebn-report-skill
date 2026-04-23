@@ -13,3 +13,4 @@ dist/
 build/
 *.egg-info/
 output/
+.claude/settings.local.json
