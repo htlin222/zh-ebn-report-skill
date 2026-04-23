@@ -197,7 +197,7 @@ class Orchestrator:
     async def phase_write(self, state: RunState) -> RunState:
         assert state.pico_result is not None and state.synthesis is not None
 
-        kind = "reading" if state.config.report_type == ReportType.READING else "case"
+        kind = state.config.report_type.value  # "reading" | "case" | "twna_case" | "twna_project"
         # 摘要最後寫；其他主章一次並行
         main_section_names = spec_section_names(kind, exclude_abstract=True)
 

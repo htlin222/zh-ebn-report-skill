@@ -25,7 +25,10 @@ from ..spec import (
     MIN_REFERENCES,
     ReportKind,
     SectionSpec,
+    min_references_for,
+    page_limit_for,
     section_order,
+    total_body_cjk_limit_for,
 )
 
 Severity = Literal["error", "warning"]
@@ -210,11 +213,19 @@ def check_sections(state: RunState, *, kind: ReportKind) -> ComplianceReport:
         report.issues.extend(_check_word_count(sec, spec))
         report.issues.extend(_check_citation_coverage(sec, spec, papers))
 
-    # 3. Title must have a question form
-    report.issues.extend(_check_title(state.topic_verdict))
+    # 3. Title must have a question form (EBR 類別；TWNA 傳統個案報告題目多為敘述句，不強制)
+    if kind in ("reading", "case"):
+        report.issues.extend(_check_title(state.topic_verdict))
 
-    # 4. References
-    report.issues.extend(_check_references(papers))
+    # 4. References (kind-specific minimum)
+    report.issues.extend(_check_references(papers, kind=kind))
+
+    # 5. Total-body length (hard page cap for TWNA submissions)
+    report.issues.extend(_check_total_length(state, kind=kind))
+
+    # 6. Anonymity (TWNA hard rule: 不得出現機構名、人員姓名、致謝對象)
+    if kind in ("twna_case", "twna_project"):
+        report.issues.extend(_check_anonymity(state))
 
     return report
 
@@ -247,31 +258,151 @@ def _check_title(verdict: TopicVerdict | None) -> list[ComplianceIssue]:
 _HIGH_LEVELS = {OxfordLevel.I, OxfordLevel.II}
 
 
-def _check_references(papers: list[Paper]) -> list[ComplianceIssue]:
+def _check_references(
+    papers: list[Paper], *, kind: ReportKind = "reading"
+) -> list[ComplianceIssue]:
     issues: list[ComplianceIssue] = []
-    if len(papers) < MIN_REFERENCES:
+    min_required = min_references_for(kind)
+    if len(papers) < min_required:
         issues.append(
             ComplianceIssue(
                 section="參考文獻",
                 rule="min_count",
                 detail=(
-                    f"納入文獻僅 {len(papers)} 篇，模板要求至少 "
-                    f"{MIN_REFERENCES} 篇"
+                    f"納入文獻僅 {len(papers)} 篇，{kind} 模板要求至少 "
+                    f"{min_required} 篇"
                 ),
             )
         )
-    high_count = sum(1 for p in papers if p.oxford_level in _HIGH_LEVELS)
-    if high_count < MIN_HIGH_LEVEL_EVIDENCE:
-        issues.append(
+    # High-level evidence requirement applies to EBR types where evidence grading
+    # is central; TWNA traditional case/project reports use references more
+    # broadly (practice guidelines, textbook-style) and do not require Oxford
+    # I–II specifically.
+    if kind in ("reading", "case"):
+        high_count = sum(1 for p in papers if p.oxford_level in _HIGH_LEVELS)
+        if high_count < MIN_HIGH_LEVEL_EVIDENCE:
+            issues.append(
+                ComplianceIssue(
+                    section="參考文獻",
+                    rule="min_high_level_evidence",
+                    detail=(
+                        f"高證據等級（Oxford I–II）僅 {high_count} 篇，"
+                        f"模板要求至少 {MIN_HIGH_LEVEL_EVIDENCE} 篇"
+                    ),
+                )
+            )
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Total length + anonymity (TWNA hard rules)
+# ---------------------------------------------------------------------------
+def _check_total_length(
+    state: RunState, *, kind: ReportKind
+) -> list[ComplianceIssue]:
+    """Enforce TWNA's hard page cap (16 or 20 pages) by total body CJK count.
+
+    TWNA細則: 非表格每頁 30×20 = 600 CJK chars. So total body ≤ pages × 600.
+    Excludes 摘要 (separate field with its own cap) and tables/citations.
+    """
+
+    limit = total_body_cjk_limit_for(kind)
+    pages = page_limit_for(kind)
+    total = 0
+    for sec in state.sections:
+        if sec.section_name == "摘要":
+            continue
+        total += count_cjk_excluding_tables_and_cites(sec.content_zh)
+    if total > limit:
+        return [
             ComplianceIssue(
-                section="參考文獻",
-                rule="min_high_level_evidence",
+                section="全文",
+                rule="total_length",
                 detail=(
-                    f"高證據等級（Oxford I–II）僅 {high_count} 篇，"
-                    f"模板要求至少 {MIN_HIGH_LEVEL_EVIDENCE} 篇"
+                    f"正文合計 {total} 字（不含摘要、表格、引文），"
+                    f"超過 {kind} 模板 {pages} 頁 × 每頁 600 字 = {limit} 字上限"
                 ),
             )
-        )
+        ]
+    return []
+
+
+# TWNA 硬禁止出現在內文的字串 pattern。匿名檢查以 regex 簡易偵測；不保證
+# 100% 準確，但能攔下明顯的違規（機構名、致謝、常見署名格式）。
+_INSTITUTION_PATTERNS = (
+    r"醫院",
+    r"醫學中心",
+    r"診所",
+    r"聯醫",
+    r"部立",
+    r"附設",
+    r"大學附設",
+)
+
+_ACKNOWLEDGEMENT_PATTERNS = (
+    r"致謝",
+    r"感謝",
+    r"Acknowledge",
+    r"acknowledge",
+)
+
+
+def _check_anonymity(state: RunState) -> list[ComplianceIssue]:
+    """Flag institution names, acknowledgement sections and obvious Chinese
+    personal names in TWNA-targeted drafts.
+
+    TWNA細則明文：不得出現所屬機構名稱、相關人員姓名及致謝對象（不符者不予通過）。
+    """
+
+    issues: list[ComplianceIssue] = []
+    inst_re = re.compile("|".join(_INSTITUTION_PATTERNS))
+    ack_re = re.compile("|".join(_ACKNOWLEDGEMENT_PATTERNS))
+    # Naive Chinese-name heuristic: 2–3 CJK chars following a title like
+    # 張醫師 / 李護理長 / 王先生 — catches obvious slips without too many
+    # false positives. Authors of cited papers in references are NOT scanned
+    # (references section is added by the renderer, not by section writers).
+    name_re = re.compile(r"[一-鿿]{1,2}(?:醫師|護理長|主任|組長|先生|小姐|女士|教授)")
+
+    for sec in state.sections:
+        text = sec.content_zh
+        for m in inst_re.finditer(text):
+            # Skip generic "本院" / "醫院口腔" 等泛指：require surrounding context
+            # of 2+ CJK chars before the match (likely proper noun like "台大醫院")
+            start = m.start()
+            before = text[max(0, start - 3) : start]
+            if before and len([c for c in before if "一" <= c <= "鿿"]) >= 2:
+                issues.append(
+                    ComplianceIssue(
+                        section=sec.section_name,
+                        rule="anonymity_institution",
+                        detail=(
+                            f"疑似出現機構名稱：'…{before}{m.group()}…'；"
+                            "TWNA 規範不得出現所屬機構名"
+                        ),
+                    )
+                )
+                break  # one finding per section is enough
+        if ack_re.search(text):
+            issues.append(
+                ComplianceIssue(
+                    section=sec.section_name,
+                    rule="anonymity_acknowledgement",
+                    detail="偵測到致謝/感謝字樣；TWNA 規範不得出現致謝對象",
+                )
+            )
+        for m in name_re.finditer(text):
+            issues.append(
+                ComplianceIssue(
+                    section=sec.section_name,
+                    rule="anonymity_personal_name",
+                    detail=(
+                        f"疑似出現人員姓名：'{m.group()}'；"
+                        "TWNA 規範不得出現相關人員姓名"
+                    ),
+                    severity="warning",  # heuristic, may have false positives
+                )
+            )
+            break
     return issues
 
 

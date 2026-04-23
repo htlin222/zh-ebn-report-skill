@@ -120,7 +120,7 @@ def _compose_report_qmd(
         "",
     ]
     # Reorder sections to canonical template order
-    kind = "reading" if state.config.report_type == ReportType.READING else "case"
+    kind = state.config.report_type.value  # "reading" | "case" | "twna_case" | "twna_project"
     canonical = [s.name for s in section_order(kind)]
     by_name: dict[str, Section] = {s.section_name: s for s in sections}
     ordered = [by_name[n] for n in canonical if n in by_name]

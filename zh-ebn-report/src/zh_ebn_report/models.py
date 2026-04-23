@@ -21,6 +21,27 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ReportType(str, Enum):
+    """Report type ↔ submit target.
+
+    - ``EBR_READING`` / ``reading``: 實證讀書報告（N1/N2，醫院自訂格式，8 章，
+      含 5A）。
+    - ``EBR_CASE`` / ``case``: 實證案例分析（N3，TEBNA 風格，7 章，含 5A +
+      個案應用）。
+    - ``TWNA_CASE``: 台灣護理學會個案報告（N2/N3 送審，9 章，≤16 頁，摘要
+      ≤500 字；傳統護理過程架構）。
+    - ``TWNA_PROJECT``: 台灣護理學會護理專案（N4 送審，10 章，≤20 頁，摘要
+      ≤300 字）。
+
+    ``READING`` / ``CASE`` 為 ``EBR_READING`` / ``EBR_CASE`` 的舊別名，保留
+    向後相容。新程式碼請用有意義的長名。
+    """
+
+    EBR_READING = "reading"
+    EBR_CASE = "case"
+    TWNA_CASE = "twna_case"
+    TWNA_PROJECT = "twna_project"
+
+    # Backwards-compat aliases (same enum member, different name)
     READING = "reading"
     CASE = "case"
 
@@ -351,7 +372,7 @@ class SynthesisResult(BaseModel):
 
 
 SectionName = Literal[
-    # 讀書報告 8 章（摘要 + 7 主章；參考文獻由 Quarto/CSL 產出）
+    # EBR 讀書報告 8 章（摘要 + 7 主章；參考文獻由 Quarto/CSL 產出）
     "摘要",
     "前言",
     "主題設定",
@@ -360,11 +381,23 @@ SectionName = Literal[
     "綜整",
     "應用建議",
     "結論",
-    # 案例分析專用
+    # EBR 案例分析專用（TEBNA 5A 風格）
     "方法",
     "個案介紹",
     "應用與評值",
     "討論",
+    # TWNA 個案報告（傳統護理過程 9 章，送 N2/N3）
+    "文獻查證",
+    "護理評估",
+    "問題確立",
+    "護理措施",
+    "結果評值",
+    "討論與結論",
+    # TWNA 護理專案（N4，額外 3 章）
+    "現況分析",
+    "問題及導因確立",
+    "專案目的",
+    "解決辦法及執行過程",
 ]
 
 

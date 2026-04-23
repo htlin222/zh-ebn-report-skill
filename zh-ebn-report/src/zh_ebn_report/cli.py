@@ -82,7 +82,16 @@ def _load_cfg() -> AppConfig:
 
 @app.command()
 def init(
-    type_: Annotated[ReportType, typer.Option("--type", help="reading | case")],
+    type_: Annotated[
+        ReportType,
+        typer.Option(
+            "--type",
+            help=(
+                "reading (EBR 讀書報告 N1/N2) | case (EBR 案例分析 N3 TEBNA) | "
+                "twna_case (TWNA 個案報告 N2/N3) | twna_project (TWNA 護理專案 N4)"
+            ),
+        ),
+    ],
     topic: Annotated[str, typer.Option("--topic", help="糊的題目也可以；守門員會幫你細化")],
     ward: Annotated[str, typer.Option("--ward", help="病房別或臨床情境")] = "一般病房",
     level: Annotated[
@@ -107,8 +116,8 @@ def init(
     _ethics_guard(accept)
     cfg = _load_cfg()
 
-    if type_ == ReportType.CASE and case_file is None:
-        console.print("[red]錯誤：案例分析必須提供 --case-file（去識別化 YAML）[/]")
+    if type_ in (ReportType.EBR_CASE, ReportType.TWNA_CASE) and case_file is None:
+        console.print("[red]錯誤：案例分析／個案報告必須提供 --case-file（去識別化 YAML）[/]")
         raise typer.Exit(2)
 
     now_year = datetime.utcnow().year

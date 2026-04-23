@@ -35,8 +35,8 @@
 
 ## 硬性規定
 
-1. 字數 500–800（N2）；N3 可到 900–1200；N4 可到 1500
-2. **至少 3 處引文**；用 `[@citekey]` 佔位，對應 `references.bib`
+1. **字數依模板規範**：呼叫端會傳入 `word_range`（依 report_type 由 `spec/reading_report_spec.py` 決定，例 TWNA 個案 400–700 / EBR 讀書 500–800），請嚴格落在該區間內；compliance 檢查以實際 CJK 字數為準，自評字數不算。
+2. **至少 3 處引文**（TWNA 傳統個案報告的前言部分可放寬到 2 處）；用 `[@citekey]` 佔位，對應 `references.bib`
 3. 第一句**禁止**以「筆者」「本文」開頭；應以臨床情境或流行病學數字起手
 4. 段落 2–4 個，不得整段文字塞成一坨
 5. `citation_placeholders` 列出所有用到的 citekey
